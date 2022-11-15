@@ -5,6 +5,7 @@ from collections import defaultdict
 from functools import partial
 from importlib import import_module
 from typing import Set
+import os
 
 import torch
 from torch.fx import GraphModule
@@ -96,8 +97,12 @@ class AotAutogradStrategy(object):
     def __init__(self, gm: torch.fx.GraphModule, example_inputs):
         import functorch.compile
 
-        functorch.compile.config.use_functionalize = True
-        functorch.compile.config.use_fake_tensor = True
+        functorch.compile.config.use_functionalize = (
+            os.environ.get("USE_FUNCTIONALIZE", "1") == "1"
+        )
+        functorch.compile.config.use_fake_tensor = (
+            os.environ.get("USE_FAKE_TENSOR", "1") == "1"
+        )
 
         super(AotAutogradStrategy, self).__init__()
         counters["aot_autograd"]["total"] += 1
@@ -499,6 +504,24 @@ class AotAutogradCudaGraphs(AotAutogradStrategy):
 
 aot_cudagraphs = AotAutogradCudaGraphs.compile_fn
 
+class AotTorchXlaTrivial(AotAutogradStrategy):
+    def candidate(self):
+        def comp(graph, inputs, *args, **kwargs):
+            return BACKENDS["torchxla_trivial"](graph, inputs)
+
+        return BACKENDS["aot_autograd"](self.gm, self.example_inputs, fw_compiler=comp)
+
+aot_torchxla_trivial = AotTorchXlaTrivial.compile_fn
+
+class AotTorchXlaTraceOnce(AotAutogradStrategy):
+    def candidate(self):
+        def comp(graph, inputs, *args, **kwargs):
+            return BACKENDS["torchxla_trace_once"](graph, inputs)
+
+        return BACKENDS["aot_autograd"](self.gm, self.example_inputs, fw_compiler=comp)
+
+aot_torchxla_trace_once = AotTorchXlaTraceOnce.compile_fn
+
 
 def create_aot_backends():
     """
@@ -540,3 +563,6 @@ def create_aot_backends():
     # aot_inductor_debug just replaces the inductor compiler with nop to help
     # isolate inductor vs aot_eager errors
     BACKENDS["aot_inductor_debug"] = aot_inductor_debug
+
+    BACKENDS["aot_torchxla_trivial"] = aot_torchxla_trivial
+    BACKENDS["aot_torchxla_trace_once"] = aot_torchxla_trace_once

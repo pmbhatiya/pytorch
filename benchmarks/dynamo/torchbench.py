@@ -54,6 +54,10 @@ USE_SMALL_BATCH_SIZE = {
     "densenet121": 4,
     "hf_Reformer": 4,
     "timm_efficientdet": 1,
+    "mobilenet_v2": 32,
+    "BERT_pytorch": 2,
+    "vgg16": 8,
+    "resnet50": 16,
 }
 
 DETECTRON2_MODELS = {
@@ -187,6 +191,7 @@ class TorchBenchmarkRunner(BenchmarkRunner):
     def __init__(self):
         super(TorchBenchmarkRunner, self).__init__()
         self.suite_name = "torchbench"
+        self.optimizer = None
 
     @property
     def skip_models(self):
@@ -285,6 +290,7 @@ class TorchBenchmarkRunner(BenchmarkRunner):
             model.eval()
         gc.collect()
         batch_size = benchmark.batch_size
+        # import pdb; pdb.set_trace() # TODO
 
         self.init_optimizer(device, model.parameters())
 
@@ -295,6 +301,10 @@ class TorchBenchmarkRunner(BenchmarkRunner):
         # global current_name, current_device
         # current_device = device
         # current_name = benchmark.name
+
+        if self.args.trace_on_xla:
+            # work around for: https://github.com/pytorch/xla/issues/4174
+            import torch_xla
         self.validate_model(model, example_inputs)
         return device, benchmark.name, model, example_inputs, batch_size
 
@@ -352,6 +362,15 @@ class TorchBenchmarkRunner(BenchmarkRunner):
             loss = self.compute_loss(pred)
         self.grad_scaler.scale(loss).backward()
         self.optimizer_step()
+        # return None
+        pl = list(mod.parameters())
+        grad_list = []
+        for param in pl:
+            if param.grad is not None:
+                grad_list.append(param.grad)
+        # print(f"#grad returned {len(grad_list)}")
+        return grad_list
+
         if collect_outputs:
             return collect_results(mod, pred, loss, cloned_inputs)
         return None

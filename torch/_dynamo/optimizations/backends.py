@@ -63,6 +63,7 @@ def create_backend(fn):
 
 @create_backend
 def eager(subgraph):
+    print(f"eager graph: {subgraph.model.code}")
     return subgraph.model
 
 
@@ -787,7 +788,16 @@ def ltc_trivial(gm: torch.fx.GraphModule, example_inputs):
 
 @create_backend
 def torchxla_trivial(subgraph):
-    return subgraph.model
+    # print(f"torchxla_trivial graph: {subgraph.model.code}")
+    # import sys; sys.exit(0)
+    def optimized_mod(*inputs):
+        import torch_xla
+        out = subgraph.model(*inputs)
+        # print(f"XLA IR Text: {torch_xla._XLAC._get_xla_tensors_text(out)}")
+        # import sys; sys.exit(0)
+        return out
+       
+    return optimized_mod
 
 
 @create_backend
