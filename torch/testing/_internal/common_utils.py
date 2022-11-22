@@ -2448,6 +2448,273 @@ class TestCase(expecttest.TestCase):
             x = x.detach().clone()._coalesced_(False)
         return x, x._indices().clone(), x._values().clone()
 
+    def generate_simple_inputs(self, layout,
+                               device=None,
+                               dtype=None,
+                               index_dtype=None,
+                               enable_batched=True,
+                               enable_hybrid=True,
+                               enable_zero_sized=True,
+                               enable_batched_variable_nse=False,
+                               output_tensor=True,
+                               patterns=None):
+        """Generator of simple inputs for tensor constructors of the given layout.
+
+        The generated tensor inputs have the following properties:
+
+        - tensor shapes are minimal but not trivial
+        - tensor values are sorted sequences for COO and CSR formats, e.g. [1, 2, 3, 4]
+        - the generated tensors represent the same mathematical tensor for all layouts
+        - the generated tensors include regular, zero-sized, and optionally, batched or/and hybrid tensors.
+
+        If output_tensor is True, yield tensors with the given
+        layout. Otherwise, yield inputs to the corresponding tensor
+        constructors:
+
+          - sparse compressed input is defined as
+            (compressed_indices, plain_indices, values), dict(size=expected_size_from_shape_inference, device=device, dtype=dtype)
+
+          - sparse COO input is defined as
+            (indices, values), dict(size=expected_size_from_shape_inference, device=device, dtype=dtype)
+
+          - strided input is defined as
+            (values,), dict(device=device, dtype=dtype)
+        """
+        if index_dtype is None:
+            index_dtype = torch.int64
+
+        is_compressed_sparse_layout = layout in {torch.sparse_csr, torch.sparse_csc, torch.sparse_bsr, torch.sparse_bsc}
+
+        if output_tensor:
+            for args, kwargs in self.generate_simple_inputs(layout, device=device, dtype=dtype, index_dtype=index_dtype,
+                                                            enable_batched=enable_batched, enable_hybrid=enable_hybrid,
+                                                            enable_zero_sized=enable_zero_sized,
+                                                            enable_batched_variable_nse=enable_batched_variable_nse,
+                                                            output_tensor=False):
+                if layout is torch.strided:
+                    size = kwargs.pop('size', args[0].shape)  # to ensure that a zero-sized tensor has the desired shape
+                    assert len(args) == 1
+                    yield args[0].reshape(size)
+                elif layout is torch.sparse_coo:
+                    yield torch.sparse_coo_tensor(*args, **kwargs)
+                elif is_compressed_sparse_layout:
+                    kwargs.update(layout=layout)
+                    yield torch.sparse_compressed_tensor(*args, **kwargs)
+                else:
+                    assert 0  # unreachable
+            return
+
+        def get_shape(pattern):
+            if isinstance(pattern, list):
+                if not pattern:
+                    return (0,)
+                return (len(pattern), *get_shape(pattern[0]))
+            return ()
+
+        def get_blockpattern(pattern, blocksize):
+            basesize = get_shape(pattern)
+            assert basesize[0] % blocksize[0] == 0, (basesize, blocksize)
+            assert basesize[1] % blocksize[1] == 0, (basesize, blocksize)
+            blockpattern = [[0 for _ in range(basesize[1] // blocksize[1])] for _ in range(basesize[0] // blocksize[0])]
+            for i, row in enumerate(pattern):
+                for j, maskin in enumerate(row):
+                    bi = i // blocksize[0]
+                    bj = j // blocksize[1]
+                    blockno = 1 + bi * (basesize[1] // blocksize[1]) + bj
+                    blockpattern[bi][bj] = blockno if maskin else blockpattern[bi][bj]
+            return blockpattern
+
+        def transpose(lst):
+            return list(map(list, zip(*lst)))
+
+        def get_sparse_data(pattern):
+            indices = []
+            values = []
+            count = 0
+            size = get_shape(pattern)
+            batchsize = size[:-2]
+            basesize = size[-2:]
+            crow_indices = [0 for _ in range(basesize[0] + 1)]
+            ccol_indices = [0 for _ in range(basesize[1] + 1)]
+            strided_values = [[0 for _ in range(basesize[1])] for _ in range(basesize[0])]
+            for i, row in enumerate(pattern):
+                for j, maskin in enumerate(row):
+                    if maskin:
+                        count += 1
+                        indices.append([i, j])
+                        values.append(count)
+                        strided_values[i][j] = count
+                        for i1 in range(i, basesize[0]):
+                            crow_indices[i1 + 1] += 1
+                        for j1 in range(j, basesize[1]):
+                            ccol_indices[j1 + 1] += 1
+            coo_indices = transpose(indices) if indices else [[]] * len(basesize)
+            if indices:
+                _, row_indices, csc_values = map(list, zip(*sorted(zip(coo_indices[1], coo_indices[0], values))))
+            else:
+                row_indices = []
+                csc_values = []
+            return {torch.sparse_coo: (coo_indices, values),
+                    torch.sparse_csr: (crow_indices, coo_indices[1], values),
+                    torch.sparse_csc: (ccol_indices, row_indices, csc_values),
+                    torch.strided: (strided_values,)}
+
+        def get_sparse_data_with_block(pattern, blocksize):
+            blockpattern = get_blockpattern(pattern, blocksize)
+            nonblock_data = get_sparse_data(pattern)
+            block_data = get_sparse_data(blockpattern)
+            bsr_values = []
+            for bi, bj in transpose(block_data[torch.sparse_coo][0]):
+                block = [[0 for j in range(blocksize[1])] for i in range(blocksize[0])]
+                for i in range(blocksize[0]):
+                    for j in range(blocksize[1]):
+                        li = bi * blocksize[0] + i
+                        lj = bj * blocksize[1] + j
+                        block[i][j] = nonblock_data[torch.strided][0][li][lj]
+                bsr_values.append(block)
+            block_indices = block_data[torch.sparse_coo][0]
+            bsc_values = [bsr_values[i - 1] for i in block_data[torch.sparse_csc][2]]
+            return {torch.sparse_bsr: (*block_data[torch.sparse_csr][:2], bsr_values),
+                    torch.sparse_bsc: (*block_data[torch.sparse_csc][:2], bsc_values),
+                    **nonblock_data}
+
+        def get_batch_sparse_data(pattern, blocksize):
+            assert isinstance(pattern, list)
+            size = get_shape(pattern)
+            if len(size) <= 2:
+                return get_sparse_data_with_block(pattern, blocksize)
+            batch_data = {}
+            for i, item in enumerate(pattern):
+                data = get_batch_sparse_data(item, blocksize)
+                for layout, d in data.items():
+                    target = batch_data.get(layout)
+                    if target is None:
+                        if layout is torch.sparse_coo:
+                            target = batch_data[layout] = ([[i] * len(d[1])] + d[0], d[1])
+                        else:
+                            target = batch_data[layout] = tuple([[d_[:]] for d_ in d])
+                    else:
+                        if layout is torch.sparse_coo:
+                            for j, lst in enumerate(target[0]):
+                                lst.extend([i] * len(d[1]) if j == 0 else d[0][j - 1])
+                            target[1].extend(d[1])
+                        else:
+                            for j in range(len(d)):
+                                target[j].append(d[j])
+            return batch_data
+
+        def expand_values(base, densesize):
+            """
+            Expand values in base to blocks of values with densesize.
+            """
+            if not densesize:
+                return base
+            if isinstance(base, list):
+                return torch.stack([expand_values(b, densesize) for b in base])
+            if base == 0:
+                return torch.zeros(densesize, dtype=torch.int64)
+            r = torch.tensor(range(densesize[0]))
+            for i, d in enumerate(densesize[1:]):
+                y = torch.arange(d, dtype=torch.int64) * (10 ** (i + 1))
+                r = r[..., None] + y[None, ...]
+            r.add_(base)
+            return r
+
+        if patterns is None:
+            # A pattern is a 3-tuple with items:
+            # - a deep list of integers that define the sparsity
+            #   patterns of the generated inputs: zero values
+            #   correspond to unspecified elements/blocks and non-zero
+            #   values the specified elements while elements with the
+            #   same value belong to the same block in some cases.
+            #   The batch inputs are generated if the depth of list is
+            #   larger than two.
+            # - a list of block sizes, only used in the case of
+            #   BSR/BSC layouts
+            # - a list of dense dimensions, used to generate hybrid
+            #   tensors
+            patterns = [
+                # a simple 3 x 2 tensor: non-hybrid, hybrid with 1 and 2 dense dimensions
+                ([[1, 2, 0],
+                  [1, 0, 3]], [(2, 1), (1, 3)], [(), (2,), (4, 5)] if enable_hybrid else [()]),
+                # 2 x 3 batch of 3 x 2 tensors: non-hybrid and hybrid with 2 dense dimensions
+                ([[[[1, 2, 0],
+                    [1, 0, 3]],
+                   [[1, 2, 3],
+                    [1, 0, 0]],
+                   [[1, 0, 0],
+                    [1, 2, 3]]],
+                  [[[0, 2, 0],
+                    [1, 2, 3]],
+                   [[1, 0, 3],
+                    [1, 2, 0]],
+                   [[1, 2, 3],
+                    [0, 2, 0]]]], [(2, 1), (2, 3)], (([(), (2,)] if enable_hybrid else [()]) if enable_batched else [])),
+                # tensor with non-trivial blocksize
+                ([[0, 1, 0, 2, 0, 2],
+                  [0, 1, 0, 0, 2, 0],
+                  [3, 3, 3, 0, 0, 0],
+                  [0, 0, 0, 0, 0, 0],
+                  [0, 5, 0, 6, 6, 6],
+                  [5, 0, 5, 6, 6, 6],
+                  [0, 0, 0, 0, 8, 8],
+                  [7, 7, 7, 0, 8, 8]], [(2, 3)], [(), (4, 5)] if enable_hybrid else [()]),
+                # batch tensor with variable NSE
+                # Requires https://github.com/pytorch/pytorch/pull/84843 or similar.
+                ([[[1, 2],
+                   [3, 4]],
+                  [[1, 0],
+                   [0, 0]]], [(1, 1)], ([()] if enable_batched_variable_nse else []))]
+
+        # the main loop of the method:
+        for pattern, blocksizes, densesizes in patterns:
+            size = get_shape(pattern)
+            for blocksize in blocksizes:
+                data = get_batch_sparse_data(pattern, blocksize)[layout]
+                for densesize in densesizes:
+                    indices = [torch.tensor(a, device=device, dtype=index_dtype) for a in data[:-1]]
+                    values = torch.tensor(expand_values(data[-1], densesize), device=device, dtype=dtype)
+                    yield (*indices, values), dict(device=device, dtype=dtype, size=size + densesize)
+
+        # zero-sized tensor inputs, non-batch, non-hybrid/hybrid
+        if enable_zero_sized:
+            for basesize, blocksizes, densesizes in [
+                    ((2, 0), [(1, 2)], [(), (2,), (2, 3)] if enable_hybrid else [()]),
+                    ((0, 2), [(1, 2), (2, 1), (3, 2)], [()]),
+                    ((0, 0), [(1, 2)], [()]),
+            ]:
+                for blocksize in blocksizes:
+                    for densesize in densesizes:
+                        if layout == torch.strided:
+                            indices = ()
+                            values = torch.empty((basesize + densesize), device=device, dtype=dtype)
+                        elif layout == torch.sparse_coo:
+                            indices = (torch.empty(len(basesize), 0, device=device, dtype=index_dtype),)
+                            values = torch.empty((0, *densesize), device=device, dtype=dtype)
+                        elif layout == torch.sparse_csr:
+                            crow_indices = torch.tensor([0] * (basesize[0] + 1), device=device, dtype=index_dtype)
+                            col_indices = torch.empty(0, device=device, dtype=index_dtype)
+                            indices = (crow_indices, col_indices)
+                            values = torch.empty((0, *densesize), device=device, dtype=dtype)
+                        elif layout == torch.sparse_csc:
+                            ccol_indices = torch.tensor([0] * (basesize[1] + 1), device=device, dtype=index_dtype)
+                            row_indices = torch.empty(0, device=device, dtype=index_dtype)
+                            indices = (ccol_indices, row_indices)
+                            values = torch.empty((0, *densesize), device=device, dtype=dtype)
+                        elif layout == torch.sparse_bsr:
+                            crow_indices = torch.tensor([0] * (basesize[0] // blocksize[0] + 1), device=device, dtype=index_dtype)
+                            col_indices = torch.empty(0, device=device, dtype=index_dtype)
+                            indices = (crow_indices, col_indices)
+                            values = torch.empty((0, *blocksize, *densesize), device=device, dtype=dtype)
+                        elif layout == torch.sparse_bsc:
+                            ccol_indices = torch.tensor([0] * (basesize[1] // blocksize[1] + 1), device=device, dtype=index_dtype)
+                            row_indices = torch.empty(0, device=device, dtype=index_dtype)
+                            indices = (ccol_indices, row_indices)
+                            values = torch.empty((0, *blocksize, *densesize), device=device, dtype=dtype)
+                        else:
+                            assert 0  # unreachable
+                        yield (*indices, values), dict(device=device, dtype=dtype, size=basesize + densesize)
+
     def safeToDense(self, t):
         # coalesce is only implemented for COO
         if t.layout == torch.sparse_coo:
