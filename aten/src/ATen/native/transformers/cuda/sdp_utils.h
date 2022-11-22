@@ -40,7 +40,9 @@ inline bool check_tensor_dtype(
          allowed_dtypes.end()))) {
     TORCH_CHECK(
         !debug,
-        "Expected query, key and value to be of dtype float16 or bfloat16 but got Query dtype: ",
+        "Expected query, key and value to all be of dtype: {",
+        c10::Join(", ", allowed_dtypes), "}. Got ",
+        "Query dtype: ",
         params.query.dtype(),
         ", Key dtype: ",
         params.key.dtype(),
