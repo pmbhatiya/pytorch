@@ -5175,21 +5175,26 @@ def multi_head_attention_forward(
     # (deep breath) calculate attention and out projection
     #
 
-    B, Nt, E = q.shape
-    q_scaled = q / math.sqrt(E)
     if attn_mask is not None:
-        attn_output_weights = torch.baddbmm(attn_mask, q_scaled, k.transpose(-2, -1))
-    else:
-        attn_output_weights = torch.bmm(q_scaled, k.transpose(-2, -1))
-    attn_output_weights = softmax(attn_output_weights, dim=-1)
-    if dropout_p > 0.0:
-        attn_output_weights = dropout(attn_output_weights, p=dropout_p)
+        if attn_mask.size(0) == 1:
+            attn_mask = attn_mask.unsqueeze(0)
+        else:
+            attn_mask = attn_mask.view(bsz, num_heads, -1, src_len)
 
-    attn_output = torch.bmm(attn_output_weights, v)
+    q = q.view(bsz, num_heads, -1, head_dim)
+    k = k.view(bsz, num_heads, -1, head_dim)
+    v = v.view(bsz, num_heads, -1, head_dim)
 
-    attn_output = attn_output.transpose(0, 1).contiguous().view(tgt_len * bsz, embed_dim)
-    attn_output = linear(attn_output, out_proj_weight, out_proj_bias)
-    attn_output = attn_output.view(tgt_len, bsz, attn_output.size(1))
+    attn_output_2, attn_output_weights_2 = _scaled_dot_product_attention(
+        q, k, v, attn_mask, dropout_p, need_weights, False)
+    attn_output_2 = attn_output_2.transpose(1, 2).transpose(0, 1).contiguous().view(bsz * tgt_len, embed_dim)
+    attn_output_weights_2 = attn_output_weights_2.view(bsz * num_heads, tgt_len, src_len)
+
+    attn_output_2 = linear(attn_output_2, out_proj_weight, out_proj_bias)
+    attn_output_2 = attn_output_2.view(tgt_len, bsz, attn_output_2.size(1))
+
+    attn_output = attn_output_2
+    attn_output_weights = attn_output_weights_2
 
     if need_weights:
         # optionally average attention weights over heads
