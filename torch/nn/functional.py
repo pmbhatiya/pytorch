@@ -5185,16 +5185,12 @@ def multi_head_attention_forward(
     k = k.view(bsz, num_heads, -1, head_dim)
     v = v.view(bsz, num_heads, -1, head_dim)
 
-    attn_output_2, attn_output_weights_2 = _scaled_dot_product_attention(
+    attn_output, attn_output_weights = _scaled_dot_product_attention(
         q, k, v, attn_mask, dropout_p, need_weights, False)
-    attn_output_2 = attn_output_2.transpose(1, 2).transpose(0, 1).contiguous().view(bsz * tgt_len, embed_dim)
-    attn_output_weights_2 = attn_output_weights_2.view(bsz * num_heads, tgt_len, src_len)
+    attn_output = attn_output.transpose(1, 2).transpose(0, 1).contiguous().view(bsz * tgt_len, embed_dim)
 
-    attn_output_2 = linear(attn_output_2, out_proj_weight, out_proj_bias)
-    attn_output_2 = attn_output_2.view(tgt_len, bsz, attn_output_2.size(1))
-
-    attn_output = attn_output_2
-    attn_output_weights = attn_output_weights_2
+    attn_output = linear(attn_output, out_proj_weight, out_proj_bias)
+    attn_output = attn_output.view(tgt_len, bsz, attn_output.size(1))
 
     if need_weights:
         # optionally average attention weights over heads
