@@ -399,7 +399,7 @@ class VariableBuilder:
             return SkipFilesVariable(
                 value, guards=make_guards(GuardBuilder.FUNCTION_MATCH)
             )
-        elif istype(value, (type, ABCMeta)):
+        elif istype(value, (type, ABCMeta)) and not issubclass(value, torch.nn.Module):
             # TODO(whc) the following seems preferable but breaks some tests, debug
             # elif inspect.isclass(value):
             return UserDefinedClassVariable(
@@ -815,7 +815,7 @@ def wrap_fx_proxy_cls(target_cls, tx, proxy, example_value=None, **options):
         proxy.node.meta["example_value"] = example_value
         return DynamicShapeVariable(proxy, example_value, **options)
     else:
-        raise AssertionError(
+        unimplemented(
             "torch.* op returned non-Tensor "
             + f"{typestr(example_value)} {proxy.node.op} {proxy.node.target}"
         )

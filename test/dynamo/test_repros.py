@@ -1467,8 +1467,6 @@ class ReproTests(torch._dynamo.test_case.TestCase):
 
         fn(torch.randn(3))
 
-    # Bug with storage meta - torch.BoolStorage is becoming torch.storage._LegacyStorageMeta
-    @unittest.expectedFailure
     def test_isinstance_storage(self):
         @torch._dynamo.optimize("eager")
         def fn(x):
@@ -2029,6 +2027,49 @@ class ReproTests(torch._dynamo.test_case.TestCase):
 
         with self.assertRaisesRegex(torch._dynamo.exc.Unsupported, "generic_jump"):
             torch._dynamo.export(f, torch.Tensor([3, 4, 5]))
+
+    def test_inline_class_method(self):
+        class A(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+
+            def forward(self, input):
+                return input.sum()
+
+        class B(A):
+            def __init__(self):
+                super().__init__()
+
+            def forward(self, input):
+                return A.forward(self, input)
+
+        class C(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+
+            def forward(self, input):
+                if input.is_cuda:
+                    return input.sin()
+                return A.forward(self, input)
+
+        inp = torch.Tensor([3, 4, 5])
+        cnt_for_c = torch._dynamo.testing.CompileCounter()
+        cnt_for_b = torch._dynamo.testing.CompileCounter()
+
+        c = C()
+        b = B()
+
+        opt_c = torch._dynamo.optimize(cnt_for_c, nopython=True)(c)
+        opt_b = torch._dynamo.optimize(cnt_for_b, nopython=True)(b)
+
+        torch._dynamo.reset()
+        self.assertTrue(same(c(inp), opt_c(inp)))
+
+        torch._dynamo.reset()
+        self.assertTrue(same(b(inp), opt_b(inp)))
+
+        self.assertEqual(cnt_for_c.op_count, 1)
+        self.assertEqual(cnt_for_b.op_count, 1)
 
 
 if __name__ == "__main__":
