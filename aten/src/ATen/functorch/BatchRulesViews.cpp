@@ -172,7 +172,7 @@ const Tensor& resize__plumbing(
       optional_memory_format == c10::MemoryFormat::Contiguous,
       "resize_: batching rule only supports None or Contiguous MemoryFormat");
   auto maybe_layer = maybeCurrentDynamicLayer();
-  TORCH_INTERNAL_ASSERT(maybe_layer.has_value());
+  VMAP_CHECK_ESCAPED(maybe_layer, "resize");
   int64_t cur_level = maybe_layer->layerId();
   if (!isBatchedAtLevel(self, cur_level)) {
     c10::impl::ExcludeDispatchKeyGuard guard2(DispatchKey::FuncTorchBatched);

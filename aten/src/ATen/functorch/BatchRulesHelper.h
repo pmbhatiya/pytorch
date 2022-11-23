@@ -250,7 +250,7 @@ inline void boxed_existing_bdim_all_batch_rule(
 
   c10::impl::ExcludeDispatchKeyGuard guard(DispatchKey::FuncTorchBatched);
   auto maybe_layer = maybeCurrentDynamicLayer();
-  TORCH_INTERNAL_ASSERT(maybe_layer.has_value());
+  VMAP_CHECK_ESCAPED(maybe_layer, "boxed_existing_bdim_all_batch_rule");
   int64_t cur_level = maybe_layer->layerId();
 
   const auto arguments = torch::jit::last(stack, num_arguments);
@@ -306,7 +306,7 @@ inline void boxed_all_tensors_have_optional_bdim(
 
   c10::impl::ExcludeDispatchKeyGuard guard(DispatchKey::FuncTorchBatched);
   auto maybe_layer = maybeCurrentDynamicLayer();
-  TORCH_INTERNAL_ASSERT(maybe_layer.has_value());
+  VMAP_CHECK_ESCAPED(maybe_layer, "boxed_all_tensors_have_optional_bdim");
   int64_t cur_level = maybe_layer->layerId();
 
   const auto arguments = torch::jit::last(stack, num_arguments);
