@@ -741,7 +741,7 @@ std::tuple<Tensor, Tensor> _scaled_dot_product_attention_math(
   }
     auto attn_mask = attn_mask_;
     // Naive, composite implementation defined here.
-    const auto embed_size = query_.size(-1);
+    const auto embed_size = query_.sym_size(-1).as_int_unchecked();
 
     // Scale q,k before matmul for stability see https://tinyurl.com/sudb9s96 for math
     const double scaling_factor = ::sqrt(::sqrt(static_cast<double>(embed_size)));
