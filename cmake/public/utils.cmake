@@ -424,6 +424,8 @@ function(torch_compile_options libname)
       set(MSVC_DEBINFO_OPTION "/Zi")
     endif()
 
+    # Add permissive- as MSVC is confused about std::hash template specialization
+    # if C++17 standard is used
     target_compile_options(${libname} PUBLIC
       $<$<COMPILE_LANGUAGE:CXX>:
         ${MSVC_RUNTIME_LIBRARY_OPTION}
@@ -441,6 +443,7 @@ function(torch_compile_options libname)
         /wd4101
         /wd4996
         /wd4275
+        /permissive-
         /bigobj>
       )
   else()
