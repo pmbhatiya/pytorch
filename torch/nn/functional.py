@@ -5181,9 +5181,9 @@ def multi_head_attention_forward(
         else:
             attn_mask = attn_mask.view(bsz, num_heads, -1, src_len)
 
-    q = q.view(bsz, num_heads, -1, head_dim)
-    k = k.view(bsz, num_heads, -1, head_dim)
-    v = v.view(bsz, num_heads, -1, head_dim)
+    q = q.view(bsz, num_heads, tgt_len, head_dim)
+    k = k.view(bsz, num_heads, src_len, head_dim)
+    v = v.view(bsz, num_heads, src_len, head_dim)
 
     attn_output, attn_output_weights = _scaled_dot_product_attention(
         q, k, v, attn_mask, dropout_p, need_weights, False)
