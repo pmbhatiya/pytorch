@@ -367,6 +367,11 @@ std::tuple<Tensor,optional<int64_t>> searchsorted_batch_rule(
   }
   TORCH_INTERNAL_ASSERT(false);
 }
+#define OP_DECOMPOSE(op)  m.impl(#op, static_cast<decltype(&ATEN_FN(op))>(native::op));
+
+TORCH_LIBRARY_IMPL(aten, CompositeImplicitBatched, m) {
+  OP_DECOMPOSE(argsort)
+}
 
 TORCH_LIBRARY_IMPL(aten, FuncTorchBatched, m) {
   VMAP_SUPPORT2(searchsorted, Tensor, searchsorted_batch_rule);
@@ -412,7 +417,7 @@ TORCH_LIBRARY_IMPL(aten, FuncTorchBatched, m) {
   REDUCTION_BOXED(_softmax);
   REDUCTION_BOXED(sort);
   REDUCTION_BOXED_ARGS(sort.stable, 2);
-  REDUCTION_BOXED(argsort);
+  // REDUCTION_BOXED(argsort);
   REDUCTION_BOXED(std_mean.correction);
   m.impl("sum", sum_decomp);
   REDUCTION_BOXED(sum.dim_IntList);
