@@ -48,6 +48,7 @@ __all__ = [
     'set_deterministic_debug_mode', 'get_deterministic_debug_mode',
     'set_float32_matmul_precision', 'get_float32_matmul_precision',
     'set_warn_always', 'is_warn_always_enabled', 'SymInt', 'SymFloat',
+    'compile',
 ]
 
 ################################################################################
@@ -1111,6 +1112,24 @@ from ._linalg_utils import (  # type: ignore[misc]
     solve,
     lstsq,
 )
+
+def compile(model: Callable, *,
+            nopython:bool = False,
+            dynamic: bool = False,
+            backend: str = "inductor",
+            cudagraphs:bool = False,
+            **kwargs) -> Callable:
+    import torch._dynamo
+    from torch._inductor.config import TritonConfigContext
+    from contextlib import nullcontext
+    if backend == "inductor":
+        cm = TritonConfigContext(cudagraphs=cudagraphs)
+    else:
+        cm = nullconex()
+    with cm:
+        rc = torch._dynamo.optimize(backend=backend, nopython=nopython, dynamic=dynamic, **kwargs)(model)
+    return rc
+
 
 def _register_device_module(device_type, module):
     r"""Register an external runtime module of the specific :attr:`device_type`

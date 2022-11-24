@@ -180,3 +180,15 @@ class trace:
     # Upload the .tar.gz file
     # Needs to be overriden based on specific environment needs
     upload_tar = None
+
+
+class TritonConfigContext:
+    def __init__(self, cudagraphs: bool):
+        self.cudagraphs = cudagraphs
+
+    def __enter__(self):
+        self.oldcudagraphs = triton.cudagraphs
+        triton.cudagraphs = self.cudagraphs
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        triton.cudagraphs = self.oldcudagraphs
